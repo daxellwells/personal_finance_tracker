@@ -1,2 +1,2 @@
 $env:PYTHONPATH = ".."
-pytest
+pytest -v -s
