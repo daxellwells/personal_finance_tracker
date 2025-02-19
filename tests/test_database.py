@@ -1,7 +1,8 @@
 from unittest.mock import patch, MagicMock
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session, sessionmaker
-from src.database.models import Base, User, Budget, Transaction
+from src.database.models import Base, User, Budget, Transaction, CATEGORIES
+from src.services.db_operations import create_transaction, create_user, create_budget
 from datetime import date
 import pytest
 
@@ -39,6 +40,66 @@ def test_session():
     session.close()
     Base.metadata.drop_all(engine)
 
+def test_create_transaction(test_session, test_user):
+    # ensure transactions are correctly created and linked to a user
+    transaction = Transaction(user=test_user, amount=-50.0, category="Food", date=date(2020, 5, 26))
+    test_session.add(transaction)
+    test_session.commit()
+    fetched_user = test_session.query(User).filter_by(username="test_user").first()
+    assert len(fetched_user.transactions) == 1
+    assert fetched_user.transactions[0].category == "Food"
+
+def test_create_transaction_function(test_session, test_user):
+    transaction = create_transaction(test_session, user_id=test_user.id, amount=100.0, category="Food", date=date(2025,1,1), description="Test transaction")
+    assert isinstance(transaction, Transaction)
+    fetched_user = test_session.query(User).filter_by(username="test_user").first()
+    assert len(fetched_user.transactions) == 1
+    assert fetched_user.transactions[0].category == "Food"
+    assert transaction.user_id == test_user.id
+    assert transaction.amount == 100.0
+    assert transaction.category == "Food"
+    assert transaction.date == date(2025,1,1)
+    assert transaction.description == "Test transaction"
+    assert transaction.id == 1
+
+def test_create_budget(test_session, test_user):
+    budget = Budget(user_id=test_user.id, category="Food", monthly_budget=1200.0)
+    test_session.add(budget)
+    test_session.commit()
+    fetched_user = test_session.query(User).filter_by(username="test_user").first()
+    assert len(fetched_user.budgets) == 1
+    assert fetched_user.budgets[0].category == "Food"
+    assert fetched_user.budgets[0].monthly_budget == 1200.0
+
+def test_create_budget_function(test_session, test_user):
+    budget = create_budget(test_session, user_id=test_user.id, category="Food", monthly_budget=1200.0)
+    assert isinstance(budget, Budget)
+    fetched_user = test_session.query(User).filter_by(username="test_user").first()
+    assert len(fetched_user.budgets) == 1
+    assert fetched_user.budgets[0].user_id == test_user.id
+    assert fetched_user.budgets[0].category == "Food"
+    assert fetched_user.budgets[0].monthly_budget == 1200.0
+
+def test_create_user(test_session):
+    user = User(username="test_user", email="test_email@email.com", password="fakepassword")
+    test_session.add(user)
+    test_session.commit()
+    assert isinstance(user, User)
+    fetched_user = test_session.query(User).filter_by(username="test_user").first()
+    assert fetched_user.id == 1
+    assert fetched_user.username == "test_user"
+    assert fetched_user.email == "test_email@email.com"
+    assert fetched_user.password =="fakepassword"
+
+def test_create_user_function(test_session):
+    user = create_user(test_session, username="test_user", email="test_email@email.com", password="fakepassword")
+    assert isinstance(user, User)
+    fetched_user = test_session.query(User).filter_by(username="test_user").first()
+    assert fetched_user.id == 1
+    assert fetched_user.username == "test_user"
+    assert fetched_user.email == "test_email@email.com"
+    assert fetched_user.password =="fakepassword"
+
 def test_tables_exist(test_session):
     # ensure all tables exist in the test db
     inspector = inspect(test_session.bind)
@@ -58,25 +119,11 @@ def test_user_budget_relationship(test_session, test_user):
 
     fetched_user = test_session.query(User).filter_by(username="test_user").first()
     assert len(fetched_user.budgets) == 2
-
-def test_create_transaction(test_session, test_user):
-    # ensure transactions are correctly created and linked to a user
-    transaction = Transaction(user=test_user, amount=-50.0, category="Food", date=date(2020, 5, 26))
-    test_session.add(transaction)
-    test_session.commit()
-
-    fetched_user = test_session.query(User).filter_by(username="test_user").first()
-    assert len(fetched_user.transactions) == 1
-    assert fetched_user.transactions[0].category == "Food"
-
+    
 def test_cascade_delete(test_session, test_user):
     # ensure deleting a User also deletes associated budgets and transactions
-    budget = Budget(user=test_user, category="Rent", monthly_budget=800.0)
-    transaction = Transaction(user=test_user, amount=-500.0, category="Rent", date=date(2025,2,17))
-
-    test_session.add(budget)
-    test_session.add(transaction)
-    test_session.commit()
+    transaction = create_transaction(test_session, user_id=test_user.id, amount=-500.0, category="Rent", date=date(2025,2,17), description="Test transaction")
+    budget = create_budget(test_session, user_id=test_user.id, category="Rent", monthly_budget=800.0)
 
     test_session.delete(test_user)
     test_session.commit()
@@ -102,13 +149,21 @@ def test_unique_email(test_session,test_user):
 def test_budget_cannot_be_negative(test_session,test_user):
     #budgets cannot have negative limits
     with pytest.raises(ValueError, match="Budget amount must be positive"):
-        budget = Budget(user_id=test_user.id, category="Entertainment", monthly_budget=-100.0)
-        test_session.add(budget)
-        test_session.commit()
+        budget = create_budget(test_session, user_id=test_user.id, category="Entertainment", monthly_budget=-100.0)
 
 def test_transaction_amount_cannot_be_zero(test_session, test_user):
     """Ensure transactions cannot have an amount of zero."""
     with pytest.raises(ValueError, match="Transaction amount cannot be zero"):
-        transaction = Transaction(user_id=test_user.id, amount=0.0, category="Food", date=date(2025, 1, 1))
+        transaction = create_transaction(test_session, user_id=test_user.id, amount=0.0, category="Food", date=date(2025, 1, 1))
         test_session.add(transaction)
         test_session.commit()  # Expect failure
+
+def test_category_validation_budget(test_session, test_user):
+    # ensure category provided for budget is valid
+    with pytest.raises(ValueError):
+        budget = create_budget(test_session, user_id=test_user.id, category="INVALID", monthly_budget=1200.0)
+
+def test_category_validation_transaction(test_session, test_user):
+    # ensure category provided for transaction is valid
+    with pytest.raises(ValueError):
+        transaction = create_transaction(test_session, user_id=test_user.id, amount=100.0, category="INVALID", date=date(2025,1,1))
